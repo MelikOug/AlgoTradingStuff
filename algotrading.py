@@ -8,6 +8,7 @@ import numpy as np
 from matplotlib.ticker import MultipleLocator
 from scipy import stats, signal
 from functools import partial
+import talib as ta
 
 pio.renderers.default='browser'
 
