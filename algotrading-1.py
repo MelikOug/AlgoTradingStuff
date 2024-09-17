@@ -5,10 +5,9 @@ import plotly.graph_objects as go
 import plotly.io as pio
 from plotly.subplots import make_subplots
 import numpy as np
-from matplotlib.ticker import MultipleLocator
 from scipy import stats, signal
-from functools import partial
 import talib as ta
+import time
 pio.renderers.default='browser'
 
 
@@ -91,19 +90,32 @@ class Data():
     
     def add(self,colname,col):
         if colname not in self.metrics:
-            self.df[colname] = col
+            st = time.time()
+            self.df.loc[:,colname] = col
             self.metrics.append(colname)
-            print(self.df)
+            et = time.time()
+            print(f'Time taken to add {colname}: {et-st} seconds')
         else:
             print('Metric already available in dataframe')
         
         
-    def remove(self,metric):
-        self.df.drop(metric, axis = 1, inplace = True)
-        self.df.drop(metric+'_Range_Signal', axis = 1, inplace = True)
-        self.metrics.remove(metric)
-        print(self.df)
-        print(self.metrics)
+    def remove(self,metric = None, all = False):
+        if all == True:
+            self.df.drop(self.df.columns[5:], axis=1, inplace = True)
+            self.metrics = []
+            print(self.df)
+        elif all == False:
+            if metric in self.metrics:
+                columns_to_drop = [column for column in self.df.columns if metric in column] 
+                self.df.drop(columns=columns_to_drop, axis = 1, inplace = True)
+                self.metrics.remove(metric)
+                print(self.df)
+                print(self.metrics)
+            else:
+                print('Metric not in dataframe')
+            
+        
+        
         
         
     def create_bounds(self, func, name, step, window_size, dynamic=False, **func_kwargs):
@@ -149,10 +161,9 @@ class Data():
             row = func(window_size=window_size, **func_kwargs)
             # Create new columns in the DataFrame using the result and prefix, setting all initial values to NaN.
             for column in row.columns:
-                self.df[f'{name}_{column}'] = row[column].iloc[0]
+                self.df.loc[:,f'{name}_{column}'] = row[column].iloc[0]
                 self.metrics.append(f'{name}_{column}')
-            # Fill NaN values forward to propagate the initial calculated values across all rows.
-            self.df.fillna(method='ffill', inplace=True)
+            
         
         else:
             # Initialize a DataFrame to store dynamically calculated bounds.
@@ -243,7 +254,7 @@ class Data():
                 if type == 'Exterior':
                     combined_mask = ~combined_mask
                     
-                self.df[col_name] = combined_mask 
+                self.df.loc[:,col_name] = combined_mask 
                 
             elif method == 'threshold':
                 # Placeholder for dynamic threshold logic if needed
@@ -279,7 +290,7 @@ class Data():
                         for thresh in columns
                     ]
                     
-                self.df[col_names] = pd.concat(masks, axis=1).set_axis(col_names, axis=1)
+                self.df.loc[:,col_names] = pd.concat(masks, axis=1).set_axis(col_names, axis=1)
                 
         else:
             col_name = f"{metric}_{type}_Signal"
@@ -292,7 +303,7 @@ class Data():
                 if type == 'Below':
                     condition = ~condition
         
-            self.df[col_name] = condition 
+            self.df.loc[:,col_name] = condition 
 
             
     def requirement_cross(self, requirement, metric, wait=2, window=10):
@@ -377,7 +388,7 @@ class Data():
         print('Available metrics are: {}'.format(self.metrics))
             
         
-    def get_signals(self, independent, meet_requirements, buy_markers_to_use, sell_markers_to_use):
+    def get_signals(self, independent, meet_requirements, buy_markers_to_use, sell_markers_to_use, show = False):
         
         """
         Analyzes specified markers within a DataFrame to generate buy and sell signals based on the confluence
@@ -423,6 +434,7 @@ class Data():
             - It is important that all columns referenced in `meet_requirements` and `markers_to_use` exist in the DataFrame.
             - The method assumes that marker values are set such that 1 indicates a potential buy signal and -1 indicates a sell signal.
         """
+        st = time.time()
         
         # If meet_requirements is not provided or is empty, default the confluence condition to True
         if not meet_requirements:
@@ -450,9 +462,12 @@ class Data():
         self.df.loc[sell_condition, 'Signal'] = -1
 
         # Optionally, you can display buy and sell signals
-        print("Buy Signals:\n", self.df[self.df['Signal'] == 1]['Close'])
-        print("Sell Signals:\n", self.df[self.df['Signal'] == -1]['Close'])
+        if show:
+            print("Buy Signals:\n", self.df[self.df['Signal'] == 1]['Close'])
+            print("Sell Signals:\n", self.df[self.df['Signal'] == -1]['Close'])
         
+        et = time.time()
+        print(f'Time taken create signals: {et-st} seconds')
     
     def get_returns_histogram(self, window_size=30, bins=50):
     
@@ -562,7 +577,7 @@ class Data():
         poc_df = pd.DataFrame(df_data, index=[final_index])
         return poc_df
 
-    def vsa_indicator(self, norm_lookback = 168):
+    def vsa_indicator(self, norm_lookback = 168*4):
         """
         Computes the Volume Spread Analysis (VSA) indicator for the DataFrame. This indicator evaluates the relationship
         between price range and volume, providing insights into potential market strength or weakness based on volume spread.
@@ -755,7 +770,7 @@ class Data():
 
 
 
-class BackTester:
+class BackTester():
     
     """
     A class to backtest trading strategies based on entry and exit signals provided within a DataFrame. This tester
@@ -782,7 +797,7 @@ class BackTester:
     - plot: Plots the backtest results including capital over time and price movements.
     """
     
-    def __init__(self, data, commission=0.002, stoploss=0.01, takeprofit=0.02, use_atr=False, atr_multiplier=1.0, trailing=False, capital = 1000):
+    def __init__(self, data, commission=0.002, stoploss=0.01, takeprofit=0.02, use_atr=False, atr_multiplier=1.0, trailing=False, start = 1000, batches = 1):
         
         """
         Initializes the BackTester object with trading parameters and initial conditions.
@@ -799,19 +814,22 @@ class BackTester:
         """
         
         self.data = data
+        self.ppm = 2592000 / (data.index[1] - data.index[0]).total_seconds() # Periods per 30 days
         self.commission = commission
         self.stoploss = stoploss
         self.takeprofit = takeprofit
         self.use_atr = use_atr
         self.atr_multiplier = atr_multiplier
         self.trailing = trailing
-        self.capital = capital  # Initial capital
-        self.position = 0  # 0 = no position, 1 = long, -1 = short
-        self.entry_price = None
-        self.stop_loss_price = None
-        self.take_profit_price = None
-        self.trade_log = pd.DataFrame(columns=['Timestamp', 'Price', 'Action', 'Profit/Loss', 'Commission', 'Cumulative Profit/Loss'])
-        self.atr = ta.ATR(self.data['High'], self.data['Low'], self.data['Close'], 14) if self.use_atr else None
+        self.start = start
+        self.data.loc[:,'ATR'] = ta.ATR(self.data['High'], self.data['Low'], self.data['Close'], 14) if self.use_atr else None
+        self.batches = np.array_split(self.data, batches)
+        self.batch_returns = []
+        self.no_trades = []
+        self.mean_batch_monthly_returns = None
+        self.std_batch_monthly_returns = None
+        self.mean_no_trades = None
+        self.std_mean_no_trades = None
         
         
     def run_strategy(self):
@@ -820,44 +838,60 @@ class BackTester:
         Executes the trading strategy by iterating through the DataFrame and managing positions based on 'Signal' column
         and price movements. Records all trades in the trade_log attribute.
         """
-        
-        for index, row in self.data.iterrows():
-            current_time = index
-            current_price = row['Close']
-            signal = row['Signal']
-            self.atr_value = self.atr.loc[current_time] 
+        for idx, batch in enumerate (self.batches):
+            self.capital = self.start  # Initial capital
+            self.position = 0  # 0 = no position, 1 = long, -1 = short
+            self.entry_price = None
+            self.stop_loss_price = None
+            self.take_profit_price = None
+            self.trade_log = pd.DataFrame(columns=['Timestamp', 'Price', 'Action', 'Profit/Loss', 'Commission', 'Cumulative Profit/Loss'])
             
-            if self.position != 0 and self.entry_price is not None:
-                if self.trailing:
-                    self.update_trailing_stop(current_price, current_time)
+            for index, row in batch.iterrows():
+                current_time = index
+                current_price = row['Close']
+                signal = row['Signal']
+                self.atr_value = batch.loc[current_time,'ATR'] 
                 
-                # Check stop loss and take profit conditions
-                if self.position == 1:
-                    if current_price <= self.stop_loss_price:
-                        self.close_position(current_price, 'hit stop loss', current_time)
-                        continue  # Skip to next iteration after closing position
-                    elif not self.trailing and self.take_profit_price is not None and current_price >= self.take_profit_price:
-                        self.close_position(current_price, 'hit take profit', current_time)
-                        continue  # Skip to next iteration after closing position
-                elif self.position == -1:
-                    if current_price >= self.stop_loss_price:
-                        self.close_position(current_price, 'hit stop loss', current_time)
-                        continue  # Skip to next iteration after closing position
-                    elif not self.trailing and self.take_profit_price is not None and current_price <= self.take_profit_price:
-                        self.close_position(current_price, 'hit take profit', current_time)
-                        continue  # Skip to next iteration after closing position
-    
-            # Open new positions or switch positions based on signals
-            if signal == 1 and self.position != 1:
-                if self.position == -1:
-                    self.close_position(current_price, 'switching position', current_time)
-                self.open_position(current_price, 'long', current_time)
-            elif signal == -1 and self.position != -1:
-                if self.position == 1:
-                    self.close_position(current_price, 'switching position', current_time)
-                self.open_position(current_price, 'short', current_time)
-
-
+                if self.position != 0 and self.entry_price is not None:
+                    if self.trailing:
+                        self.update_trailing_stop(current_price, current_time)
+                    
+                    # Check stop loss and take profit conditions
+                    if self.position == 1:
+                        if current_price <= self.stop_loss_price:
+                            self.close_position(current_price, 'hit stop loss', current_time)
+                            continue  # Skip to next iteration after closing position
+                        elif not self.trailing and self.take_profit_price is not None and current_price >= self.take_profit_price:
+                            self.close_position(current_price, 'hit take profit', current_time)
+                            continue  # Skip to next iteration after closing position
+                    elif self.position == -1:
+                        if current_price >= self.stop_loss_price:
+                            self.close_position(current_price, 'hit stop loss', current_time)
+                            continue  # Skip to next iteration after closing position
+                        elif not self.trailing and self.take_profit_price is not None and current_price <= self.take_profit_price:
+                            self.close_position(current_price, 'hit take profit', current_time)
+                            continue  # Skip to next iteration after closing position
+                
+                # Open new positions or switch positions based on signals
+                if signal == 1 and self.position != 1:
+                    if self.position == -1:
+                        self.close_position(current_price, 'switching position', current_time)
+                    self.open_position(current_price, 'long', current_time)
+                elif signal == -1 and self.position != -1:
+                    if self.position == 1:
+                        self.close_position(current_price, 'switching position', current_time)
+                    self.open_position(current_price, 'short', current_time)
+                    
+            self.calculate_metrics(batch_index = idx, batch_length = len(batch), show_trade_log = False)
+            self.plot(batch)
+            
+        self.mean_batch_monthly_returns = np.mean(self.batch_returns)
+        self.std_batch_monthly_returns = np.std(self.batch_returns)
+        self.mean_no_trades = np.mean(self.no_trades)
+        self.std_no_trades = np.std(self.no_trades)
+        
+            
+            
     def open_position(self, price, type, current_time):
         
         """
@@ -977,7 +1011,7 @@ class BackTester:
                 self.stop_loss_price = max(self.stop_loss_price, current_price * (1+self.stoploss))
 
 
-    def calculate_metrics(self, show_trade_log=False):
+    def calculate_metrics(self, batch_index, batch_length, show_trade_log=False):
         
         """
         Calculates and prints trading performance metrics such as total profit, win rate, and largest wins/losses.
@@ -986,17 +1020,26 @@ class BackTester:
         - show_trade_log (bool): If True, also prints the trade log. Default is False.
         """
         
-        profits = self.trade_log['Profit/Loss'].dropna()
-        total_profit = profits.sum()
+        profits = self.trade_log['Profit/Loss']
+        total_profit = self.capital - self.start
         win_trades = profits[profits > 0]
         win_rate = len(win_trades) / len(profits) if not profits.empty else 0
         largest_win_money = self.trade_log['Profit/Loss'].max()
-        maxidx = self.trade_log['Profit/Loss'].idxmax()
-        largest_win_percent =  (largest_win_money / self.trade_log.loc[maxidx-1,'Capital'])* 100
-        largest_loss_money = self.trade_log['Profit/Loss'].min()
-        minidx = self.trade_log['Profit/Loss'].idxmin()
-        largest_loss_percent = (largest_loss_money / self.trade_log.loc[minidx-1,'Capital'])* 100
-        
+        maxidx = self.trade_log['Profit/Loss'].idxmax() if not profits.empty else None
+        if maxidx == 0:
+            largest_win_percent = (largest_win_money / self.start) * 100
+        else:
+            largest_win_percent =  (largest_win_money / self.trade_log.loc[maxidx-1,'Capital'])* 100 if not profits.empty else np.nan
+        largest_loss_money = self.trade_log['Profit/Loss'].min() if not profits.empty else 0
+        minidx = self.trade_log['Profit/Loss'].idxmin() if not profits.empty else None
+        if minidx == 0:
+            largest_loss_percent = (largest_loss_money / self.start)* 100
+        else:
+            largest_loss_percent = (largest_loss_money / self.trade_log.loc[minidx-1,'Capital'])* 100 if not profits.empty else np.nan
+            
+        self.returns_monthly = ((self.capital/self.start) ** (self.ppm/batch_length) - 1) * 100
+        self.batch_returns.append(self.returns_monthly)
+        self.no_trades.append(len(profits)/((batch_length/self.ppm)*100))
         metrics = {
             'Total Profit': f'£{total_profit:.2f}',
             'Final Capital': f'£{self.capital:.2f}',
@@ -1004,19 +1047,21 @@ class BackTester:
             'Win Rate': f"{win_rate:.2%}",
             'Average Profit per Trade': f'£{total_profit / len(profits) if not profits.empty else 0:.2f}',
             'Largest Win': f'£{largest_win_money:.2f} = {largest_win_percent:.2f}%',
-            'Largest Loss': f'£{largest_loss_money:.2f} = {largest_loss_percent:.2f}%'
+            'Largest Loss': f'£{largest_loss_money:.2f} = {largest_loss_percent:.2f}%',
+            'Batch % Returns': f'{(self.capital/self.start - 1)*100}%',
+            '% 30-day Returns': f'{self.returns_monthly}%'
         }
 
         if show_trade_log:
-            print("\nTrade Log:")
+            print(f"\nTrade Log - Batch {batch_index+1}:")
             print(self.trade_log.to_string(index=False))
 
-        print("\nTrade Metrics:")
+        print(f"\nTrade Metrics - Batch {batch_index+1} - Length {(batch_length/self.ppm) * 30:.1f} Days:")
         for key, value in metrics.items():
             print(f"{key}: {value}")
 
 
-    def plot(self):
+    def plot(self,batch):
         
         """
         Plots the results of the backtest including the price data and capital evolution over time on a graph.
@@ -1030,14 +1075,15 @@ class BackTester:
         ax.grid()
         ax.set_ylabel("Close Price", fontsize = 15)
         ax.set_xlabel("Time", fontsize = 15)
-        ax.plot(self.data.index, self.data['Close'], color = 'black')
+        ax.plot(batch.index, batch['Close'], color = 'black')
 
         ax2 = ax.twinx()
         ax2.tick_params(axis='y', labelcolor='orange')
         ax2.set_ylabel("Capital", fontsize = 15)
 
         ax2.plot(self.trade_log['Timestamp'], self.trade_log['Capital'], color = 'orange')
-    
+        plt.show()
+        
 
       
 
@@ -1045,13 +1091,16 @@ class BackTester:
 # Get historical data
 data = Data()
 data.symbol = 'BTCUSDT'
-data.interval = '5m'
-data.start_str = '2024-01-01' #YYYY-MM-DD
+data.interval = '15m'
+data.start_str = '2021-03-01' #YYYY-MM-DD
+#data.end_str = '2024-01-01' #YYYY-MM-DD
 
 data.get_historical_klines(show_dataframe = True)
 
 
 #%%
+
+'''
 # Here, dynamic volume profile bounds are being created. The `create_bounds` method uses a function `get_volume_profile`,
 # which is partially applied with specific parameters like bins, prom_factor, and show.
 # - `dynamic=True` indicates the bounds are recalculated dynamically for each step.
@@ -1059,6 +1108,8 @@ data.get_historical_klines(show_dataframe = True)
 # - `window_size=500` specifies the number of rows in each sliding window over which the volume profile is calculated.
 # - `name='VPF'` names the resulting columns prefixed with 'VPF' for identification.
 # - `func=partial(...)` specifies the function to calculate bounds with the indicated parameters.
+
+#MERGE THIS WITH data.add so i can do data.add(...VPF...)
 data.create_bounds(dynamic=True, step=1, window_size=500, name='VPF', func=partial(data.get_volume_profile, bins=50, prom_factor=0.5, show=False))
 
 # Adding range markers for volume profile upper and lower bounds. These indicate where the 'Close' price is above the upper bound or below the lower bound.
@@ -1077,32 +1128,63 @@ data.add_range_marker('VPF_Lower', type='Below', dynamic=True, ref='Close')
 # - `window=2` defines how long the signal remains True after the condition is met.
 data.requirement_cross('VPF_Below_Signal', metric='VPF', wait=3, window=2)
 data.requirement_cross('VPF_Above_Signal', metric='VPF', wait=3, window=2)
-
-# Adding a new indicator, the Relative Strength Index (RSI) for 14 periods to the dataset.
-data.add('RSI_14', ta.RSI(data.df['Close'], timeperiod=14))
-
-# Adding range markers for the RSI where signals are generated when RSI crosses below 30 or above 70.
-# These are typical thresholds for identifying overbought and oversold conditions in the market.
-data.add_range_marker('RSI_14', type='Below', dynamic=False, threshold=30)
-data.add_range_marker('RSI_14', type='Above', dynamic=False, threshold=70)
-
-# Adding the Volume Spread Analysis (VSA) indicator to the dataset.
-data.add('VSA', data.vsa_indicator())
-
-# Creating a range marker for the VSA indicator where a signal is generated if the VSA value is above 2.
-data.add_range_marker('VSA', type='Above', dynamic=False, threshold=2)
-
-# Generating buy and sell signals based on the previously created indicators and range markers.
-# - `independent=False` indicates that the signals depend on the combination of several conditions.
-# - `meet_requirements` specifies which conditions must be met for a signal.
-# - `buy_markers_to_use` and `sell_markers_to_use` define specific signals that trigger buy or sell actions.
-data.get_signals(independent=False, meet_requirements=['VSA_Above_Signal'], buy_markers_to_use=['RSI_14_Below_Signal'], sell_markers_to_use=['RSI_14_Above_Signal'])
+'''
 
 #%%
 
-backtester = BackTester(data.df, trailing=True, use_atr = True, commission = 0.002, atr_multiplier = 0.5 )  
-backtester.run_strategy()
-backtester.calculate_metrics(show_trade_log = True)
-backtester.plot()
+bounds = np.arange(50,80,3)
+thresholds = np.arange(0,1.0,0.1)
+returns = []
+rstds = []
+no_trades = []
+nstds = []
+for val in thresholds:
+    data.remove(all = True)
+    # Adding a new indicator, the Relative Strength Index (RSI) for 14 periods to the dataset.
+    data.add('RSI_14', ta.RSI(data.df['Close'], timeperiod=14))
+    
+    # Adding range markers for the RSI where signals are generated when RSI crosses below 30 or above 70.
+    # These are typical thresholds for identifying overbought and oversold conditions in the market.
+    data.add_range_marker('RSI_14', type='Below', dynamic=False, threshold=30)
+    data.add_range_marker('RSI_14', type='Above', dynamic=False, threshold=70)
+    
+    # Adding the Volume Spread Analysis (VSA) indicator to the dataset.
+    data.add('VSA', data.vsa_indicator())
+    
+    # Creating a range marker for the VSA indicator where a signal is generated if the VSA value is above 2.
+    data.add_range_marker('VSA', type='Above', dynamic=False, threshold=val)
+    
+    # Generating buy and sell signals based on the previously created indicators and range markers.
+    # - `independent=False` indicates that the signals depend on the combination of several conditions.
+    # - `meet_requirements` specifies which conditions must be met for a signal.
+    # - `buy_markers_to_use` and `sell_markers_to_use` define specific signals that trigger buy or sell actions.
+    data.get_signals(show = False, independent=False, meet_requirements=[], buy_markers_to_use=['RSI_14_Below_Signal'], sell_markers_to_use=['RSI_14_Above_Signal'])
+    
+    backtester = BackTester(data.df, trailing=True, use_atr = True, commission = 0.003, atr_multiplier = 0.3,start = 1000, batches = 40)  
+    backtester.run_strategy()
+    returns.append(backtester.mean_batch_monthly_returns)
+    rstds.append(backtester.std_batch_monthly_returns)
+    no_trades.append(backtester.mean_no_trades)
+    nstds.append(backtester.std_no_trades)
+    
+
 #%%
-data.show(show_volume = True, add_line = False, lines = [], show_pocs = True, use_densities = True)
+
+
+fig, ax = plt.subplots(figsize=(8, 5), dpi=300)
+ax.tick_params(axis='y', labelcolor='black')  
+plt.title('BTC')
+ax.grid()
+ax.set_ylabel("% 30-day Returns", fontsize = 15)
+ax.set_xlabel("VSA Threshold", fontsize = 15)
+
+ax.errorbar(thresholds,returns,yerr = np.array(rstds)/np.sqrt(40))
+
+ax2 = ax.twinx()
+ax2.tick_params(axis='y', labelcolor='red')
+ax2.set_ylabel("No. Trades Per Day", fontsize = 15)
+
+ax2.errorbar(thresholds,no_trades,yerr = np.array(nstds)/np.sqrt(40), color = 'red')
+plt.show()
+#%%
+data.show(show_volume = True, add_line = False, lines = [], show_pocs = False, use_densities = False)
