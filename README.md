@@ -1,7 +1,8 @@
 (Open in spyder IDE so that #%% separates the cells)
 
-A very rough program designed to calculate the volume profile of time series price data at each time interval
-The program plots the candlestick chart with the VPF points of control as well as lower and upper bounds calculated using peak widths
-There is also the option to use various other indicators to give long/short signals on the data
-The overall aim is to make a versatile backtesting program that can be changed to incorporate multiple indicators and give signals where there is confluence between them
+This Python script not only retrieves and analyses cryptocurrency trading data from the Binance API but also includes a customisable backtesting engine. 
+The backtester allows users to simulate trading strategies with various options such as trailing stop loss, fixed stop loss, take profit levels, and more. 
+By integrating technical indicators from TA-Lib as well as custom class methods, users can test different trading strategies in historical data scenarios. 
+This feature helps evaluate the effectiveness of strategies and refine them before live deployment, providing valuable insights into risk management and potential profitability.
+
 
